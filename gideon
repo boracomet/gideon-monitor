@@ -346,15 +346,20 @@ box_bottom() {
 
 box_bottom_title() {
   local title=$1 width=$2
-  local inner left rest
+  local inner left rest budget
   width=$(safe_num "$width")
   inner=$(( width - 2 ))
   (( inner < 0 )) && inner=0
   left="─ ${title} "
   rest=$(( inner - ${#left} ))
   if (( rest < 0 )); then
-    left=${left:0:inner}
-    rest=0
+    budget=$(( inner - 3 ))
+    (( budget < 0 )) && budget=0
+    title=${title:0:budget}
+    title=${title%%[-─ ]##}
+    left="─ ${title} "
+    rest=$(( inner - ${#left} ))
+    (( rest < 0 )) && rest=0
   fi
   printf '%s╰%s%s╯%s' "$C_CYAN" "$left" "$(repeat_char $rest '─')" "$C_RESET"
 }
@@ -561,7 +566,7 @@ footer_hit() {
 
 build_footer() {
   local self_ram sort_lbl ival self sort_text reload_text lang_text exit_text legend
-  local max keep_exit keep_extra span
+  local max keep_extra span
   self_ram=$(fmt_ram_kb $SELF_RSS_KB)
   if [[ $SORT_BY == ram ]]; then
     sort_lbl="ram"
@@ -590,7 +595,6 @@ build_footer() {
   reload_text="$(L reload): ${ival}"
   exit_text="ctrl+c $(L exit)"
   legend=""
-  keep_exit=1
   keep_extra=0
   if (( TCOLS >= 132 )); then
     keep_extra=1
@@ -602,8 +606,7 @@ build_footer() {
   assemble_footer() {
     local sep=$1
     local -a parts
-    parts=("$self" "$sort_text" "$reload_text" "$lang_text")
-    (( keep_exit )) && parts+=("$exit_text")
+    parts=("$self" "$sort_text" "$reload_text" "$lang_text" "$exit_text")
     (( keep_extra )) && parts+=("$legend")
     FOOTER_TEXT=$(footer_join "$sep" "${parts[@]}")
   }
@@ -614,10 +617,6 @@ build_footer() {
     assemble_footer "  ·  "
   fi
   if (( ${#FOOTER_TEXT} > max )); then
-    assemble_footer " | "
-  fi
-  if (( ${#FOOTER_TEXT} > max )); then
-    keep_exit=0
     assemble_footer " | "
   fi
   if (( ${#FOOTER_TEXT} > max )); then

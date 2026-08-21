@@ -1,12 +1,12 @@
 # Gideon
 
+Hobby [bpytop](https://github.com/aristocratos/bpytop)-style macOS app monitor for CPU, RAM, and battery.
+
+Created by Bora Ata Türkoğlu.
+
 <p align="center">
   <img src="docs/screenshot.png" alt="Gideon" width="900">
 </p>
-
-Hobby [bpytop](https://github.com/aristocratos/bpytop)-style macOS app monitor for CPU, RAM, and battery.
-
-**Created by Bora Ata Türkoğlu.**
 
 `gideon` switches your terminal to an alternate screen. Ctrl+C restores it. No sudo, no extra Homebrew packages — only stock macOS `zsh`, `ps`, `vm_stat`, `sysctl`, and `pmset`.
 
