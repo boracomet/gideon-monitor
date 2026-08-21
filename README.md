@@ -1,18 +1,29 @@
 # Gideon
 
-[ English ](#english) | [ Türkçe ](#türkçe)
+<p align="center">
+  <a href="#english"><img src="https://img.shields.io/badge/English-0ea5e9?style=for-the-badge&labelColor=0ea5e9&color=0ea5e9" alt="English"></a>
+  <a href="#turkce"><img src="https://img.shields.io/badge/Türkçe-1e293b?style=for-the-badge&labelColor=1e293b&color=334155" alt="Türkçe"></a>
+</p>
 
-Hobby [bpytop](https://github.com/aristocratos/bpytop)-style macOS app monitor for CPU, RAM, and battery. Created by **Bora Ata Türkoğlu**.
+<p align="center">
+  <img src="docs/screenshot.png" alt="Gideon" width="900">
+</p>
+
+<p align="center">Hobby <a href="https://github.com/aristocratos/bpytop">bpytop</a>-style macOS app monitor for CPU, RAM, and battery.<br>Created by <strong>Bora Ata Türkoğlu</strong>.</p>
 
 ---
 
+<a id="english"></a>
 ## English
+
+<p>
+  <a href="#english"><img src="https://img.shields.io/badge/English-0ea5e9?style=for-the-badge" alt="English"></a>
+  <a href="#turkce"><img src="https://img.shields.io/badge/Türkçe-1e293b?style=for-the-badge&labelColor=1e293b&color=334155" alt="Türkçe"></a>
+</p>
 
 **gideon-monitor** — a terminal UI that lists the apps you actually opened, not dozens of macOS daemons.
 
 > A hobby / example project by **Bora Ata Türkoğlu**. Fun first, still useful in a real terminal.
-
-![Gideon running in Terminal](docs/screenshot.png)
 
 Type `gideon` and the terminal switches to an alternate screen. Ctrl+C restores it. No sudo, no extra Homebrew packages — only stock macOS `zsh`, `ps`, `vm_stat`, `sysctl`, and `pmset`.
 
@@ -106,13 +117,17 @@ No formal license file — personal hobby / example project. Fork it, break it, 
 
 ---
 
+<a id="turkce"></a>
 ## Türkçe
+
+<p>
+  <a href="#english"><img src="https://img.shields.io/badge/English-1e293b?style=for-the-badge&labelColor=1e293b&color=334155" alt="English"></a>
+  <a href="#turkce"><img src="https://img.shields.io/badge/Türkçe-0ea5e9?style=for-the-badge" alt="Türkçe"></a>
+</p>
 
 **gideon-monitor** — bpytop-tarzı macOS uygulama monitörü (CPU, RAM, güç, pil).
 
 > Eğlence amaçlı örnek proje — **Bora Ata Türkoğlu** tarafından oluşturuldu.
-
-![Gideon terminalde](docs/screenshot.png)
 
 `gideon` yazınca terminal alternatif ekrana geçer; Ctrl+C ile eski haline döner. Sudo yok, ekstra Homebrew paketi yok — sadece macOS’ta duran `zsh`, `ps`, `vm_stat`, `sysctl` ve `pmset`.
 
