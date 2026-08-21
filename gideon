@@ -12,12 +12,17 @@ typeset TCOLS TLINES
 typeset -a APP_NAMES APP_CPU APP_RSS APP_EN
 typeset TOTAL_CPU_PCT=0
 typeset MEM_USED_B=0 MEM_TOTAL_B=0 MEM_PCT=0
-typeset BAT_PCT=0 BAT_LABEL="—"
+typeset BAT_PCT=0 BAT_STATE=none BAT_REMAIN=""
 typeset NCPU=1
 typeset SORT_BY=cpu
+typeset REFRESH_SEC=1
+typeset LANG_UI=tr
 typeset SELF_CPU=0 SELF_RSS_KB=0
 typeset HIT_W1=0 HIT_W2=0 HIT_HDR_ROW=6
 typeset HIT_CPU_X0=0 HIT_CPU_X1=0 HIT_RAM_X0=0 HIT_RAM_X1=0
+typeset HIT_INT_X0=0 HIT_INT_X1=0 HIT_INT_Y=0
+typeset HIT_TR_X0=0 HIT_TR_X1=0 HIT_EN_X0=0 HIT_EN_X1=0
+typeset FOOTER_TEXT=""
 typeset STTY_SAVE=""
 
 C_RESET=$'\033[0m'
@@ -104,6 +109,66 @@ restore() {
 }
 
 trap 'restore; exit 0' INT TERM
+
+ui_en() { [[ $LANG_UI == en ]] }
+
+# Visible copy. Keys are stable; grouping still uses "System" internally.
+L() {
+  if ui_en; then
+    case $1 in
+      cores)   print cores ;;
+      battery) print battery ;;
+      apps)    print applications ;;
+      app)     print APP ;;
+      cpu_col) print 'CPU/core' ;;
+      pwr)     print PWR ;;
+      sort)    print sort ;;
+      exit)    print exit ;;
+      legend)  print 'top: all cores  ·  list: per core' ;;
+      system)  print System ;;
+      *)       print -r -- "$1" ;;
+    esac
+  else
+    case $1 in
+      cores)   print çekirdek ;;
+      battery) print pil ;;
+      apps)    print uygulamalar ;;
+      app)     print UYGULAMA ;;
+      cpu_col) print 'CPU/çek' ;;
+      pwr)     print GÜÇ ;;
+      sort)    print sıralama ;;
+      exit)    print çık ;;
+      legend)  print 'üst: tüm çekirdekler  ·  liste: çekirdek başı' ;;
+      system)  print Sistem ;;
+      *)       print -r -- "$1" ;;
+    esac
+  fi
+}
+
+batt_label() {
+  case $BAT_STATE in
+    ac)
+      ui_en && print AC || print priz ;;
+    charging)
+      ui_en && print 'charging on' || print 'şarj etkin' ;;
+    full)
+      ui_en && print full || print dolu ;;
+    remain)
+      ui_en && print "${BAT_REMAIN} left" || print "${BAT_REMAIN} kaldı" ;;
+    onbatt)
+      ui_en && print 'on battery' || print pilde ;;
+    *)
+      ui_en && print n/a || print yok ;;
+  esac
+}
+
+display_app() {
+  if [[ $1 == System ]]; then
+    L system
+  else
+    print -r -- "$1"
+  fi
+}
 
 # Always a non-negative decimal, never empty. Stops `(( x > 0 ))` from throwing.
 safe_num() {
@@ -358,12 +423,13 @@ collect_mem() {
 collect_batt() {
   local raw
   BAT_PCT=0
-  BAT_LABEL="yok"
+  BAT_STATE=none
+  BAT_REMAIN=""
   raw=$(pmset -g batt 2>/dev/null) || return
   if [[ $raw != *InternalBattery* && $raw != *Battery* ]]; then
     if [[ $raw == *"AC Power"* ]]; then
       BAT_PCT=100
-      BAT_LABEL="priz"
+      BAT_STATE=ac
     fi
     return
   fi
@@ -372,18 +438,19 @@ collect_batt() {
   fi
   if [[ $raw == *"discharging"* ]]; then
     if [[ $raw =~ ([0-9]+:[0-9]+)[[:space:]]remaining ]]; then
-      BAT_LABEL="${match[1]} kaldı"
+      BAT_STATE=remain
+      BAT_REMAIN=$match[1]
     else
-      BAT_LABEL="pilde"
+      BAT_STATE=onbatt
     fi
   elif [[ $raw == *"charging"* ]]; then
-    BAT_LABEL="şarj etkin"
+    BAT_STATE=charging
   elif [[ $raw == *"charged"* ]]; then
-    BAT_LABEL="dolu"
+    BAT_STATE=full
   elif [[ $raw == *"AC Power"* ]]; then
-    BAT_LABEL="şarj etkin"
+    BAT_STATE=charging
   else
-    BAT_LABEL="pilde"
+    BAT_STATE=onbatt
   fi
 }
 
@@ -460,8 +527,8 @@ build_stat_panel() {
   PANEL+=("$(box_bottom $width)")
 }
 
-footer_title() {
-  local self_ram sort_lbl extra
+build_footer() {
+  local self_ram sort_lbl extra prefix lbl mid lang suffix
   self_ram=$(fmt_ram_kb $SELF_RSS_KB)
   if [[ $SORT_BY == ram ]]; then
     sort_lbl="ram"
@@ -469,11 +536,34 @@ footer_title() {
     sort_lbl="cpu"
   fi
   extra=""
-  if (( TCOLS >= 108 )); then
-    extra="  ·  üst: tüm çekirdekler  ·  liste: çekirdek başı"
+  if (( TCOLS >= 120 )); then
+    extra="  ·  $(L legend)"
   fi
-  printf 'gideon  %s%%  %s  ·  sıralama: %s  ·  1s  ·  ctrl+c çık%s' \
-    "$SELF_CPU" "$self_ram" "$sort_lbl" "$extra"
+  case $REFRESH_SEC in
+    5) lbl="5s" ;;
+    30) lbl="30s" ;;
+    60)
+      if ui_en; then
+        lbl="1 min"
+      else
+        lbl="1 dk"
+      fi
+      ;;
+    *) lbl="1s" ;;
+  esac
+  prefix="gideon  ${SELF_CPU}%  ${self_ram}  ·  $(L sort): ${sort_lbl}  ·  "
+  mid="  ·  "
+  lang="TR EN"
+  suffix="  ·  ctrl+c $(L exit)${extra}"
+  FOOTER_TEXT="${prefix}${lbl}${mid}${lang}${suffix}"
+  # ╰─[space]title…  → title starts at screen col 4 (SGR 1-based)
+  HIT_INT_Y=$TLINES
+  HIT_INT_X0=$(( 4 + ${#prefix} ))
+  HIT_INT_X1=$(( HIT_INT_X0 + ${#lbl} - 1 ))
+  HIT_TR_X0=$(( HIT_INT_X1 + ${#mid} + 1 ))
+  HIT_TR_X1=$(( HIT_TR_X0 + 1 ))
+  HIT_EN_X0=$(( HIT_TR_X0 + 3 ))
+  HIT_EN_X1=$(( HIT_EN_X0 + 1 ))
 }
 
 draw_frame() {
@@ -504,7 +594,7 @@ draw_frame() {
   (( spark_w < 0 )) && spark_w=0
   spark=$(make_spark $spark_w)
   line1="${line1}$(pct_color $TOTAL_CPU_PCT)${spark}${C_RESET}"
-  cpu_title="cpu · ${NCPU} çekirdek"
+  cpu_title="cpu · ${NCPU} $(L cores)"
   if (( ${#cpu_title} + 4 > w1 )); then
     cpu_title="cpu · ${NCPU}"
   fi
@@ -515,8 +605,8 @@ draw_frame() {
   build_stat_panel "ram" $w2 "$line1" $MEM_PCT
   top_ram=("${PANEL[@]}")
 
-  line1=" $(batt_color $BAT_PCT)$(printf '%d%%' $(safe_num $BAT_PCT))${C_RESET}  ${BAT_LABEL}"
-  build_stat_panel "pil" $w3 "$line1" $BAT_PCT batt
+  line1=" $(batt_color $BAT_PCT)$(printf '%d%%' $(safe_num $BAT_PCT))${C_RESET}  $(batt_label)"
+  build_stat_panel "$(L battery)" $w3 "$line1" $BAT_PCT batt
   top_bat=("${PANEL[@]}")
 
   rows=()
@@ -527,7 +617,7 @@ draw_frame() {
   aheight=$(( TLINES - 4 ))
   (( aheight < 3 )) && aheight=3
 
-  cpu_w=8
+  cpu_w=9
   ram_w=10
   power_w=10
   gaps=6
@@ -553,16 +643,16 @@ draw_frame() {
   HIT_RAM_X1=$(( HIT_RAM_X0 + ram_w - 1 ))
   HIT_HDR_ROW=6
 
-  hdr_cpu="CPU/çek"
+  hdr_cpu="$(L cpu_col)"
   hdr_ram="RAM"
   if [[ $SORT_BY == ram ]]; then
     hdr_ram="RAM▼"
   else
-    hdr_cpu="CPU/çek▼"
+    hdr_cpu="$(L cpu_col)▼"
   fi
 
-  rows+=("$(box_top "uygulamalar" $TCOLS)")
-  rows+=("$(box_row " ${C_DIM}$(pad_right UYGULAMA $name_w)  $(pad_left $hdr_cpu $cpu_w)  $(pad_left $hdr_ram $ram_w)  $(pad_right GÜÇ $power_w)${C_RESET}" $TCOLS)")
+  rows+=("$(box_top "$(L apps)" $TCOLS)")
+  rows+=("$(box_row " ${C_DIM}$(pad_right "$(L app)" $name_w)  $(pad_left $hdr_cpu $cpu_w)  $(pad_left $hdr_ram $ram_w)  $(pad_right "$(L pwr)" $power_w)${C_RESET}" $TCOLS)")
 
   slots=$(( aheight - 3 ))
   (( slots < 0 )) && slots=0
@@ -575,7 +665,7 @@ draw_frame() {
 
   for (( i = 1; i <= slots; i++ )); do
     if (( i <= n )); then
-      name=${APP_NAMES[i]}
+      name=$(display_app "${APP_NAMES[i]}")
       cpu=$(safe_num ${APP_CPU[i]})
       rss=$(safe_num ${APP_RSS[i]})
       en=$(safe_num ${APP_EN[i]})
@@ -589,7 +679,8 @@ draw_frame() {
     fi
   done
 
-  rows+=("$(box_bottom_title "$(footer_title)" $TCOLS)")
+  build_footer
+  rows+=("$(box_bottom_title "$FOOTER_TEXT" $TCOLS)")
 
   buf=$'\033[H'
   for (( i = 1; i <= TLINES; i++ )); do
@@ -598,6 +689,15 @@ draw_frame() {
     buf+=$'\033[K'
   done
   printf '%s' "$buf"
+}
+
+cycle_interval() {
+  case $REFRESH_SEC in
+    1) REFRESH_SEC=5 ;;
+    5) REFRESH_SEC=30 ;;
+    30) REFRESH_SEC=60 ;;
+    *) REFRESH_SEC=1 ;;
+  esac
 }
 
 apply_click() {
@@ -626,6 +726,18 @@ apply_click() {
       return 0
     fi
   fi
+  if (( y == HIT_INT_Y && x >= HIT_INT_X0 && x <= HIT_INT_X1 )); then
+    cycle_interval
+    return 0
+  fi
+  if (( y == HIT_INT_Y && x >= HIT_TR_X0 && x <= HIT_TR_X1 )); then
+    LANG_UI=tr
+    return 0
+  fi
+  if (( y == HIT_INT_Y && x >= HIT_EN_X0 && x <= HIT_EN_X1 )); then
+    LANG_UI=en
+    return 0
+  fi
   return 1
 }
 
@@ -652,12 +764,14 @@ handle_esc_seq() {
 }
 
 wait_tick() {
-  local c
+  local c timeout
+  timeout=$(safe_num $REFRESH_SEC)
+  (( timeout < 1 )) && timeout=1
   if [[ ! -t 0 ]]; then
-    sleep 1
+    sleep $timeout
     return
   fi
-  if ! read -r -t 1 -k 1 c 2>/dev/null; then
+  if ! read -r -t $timeout -k 1 c 2>/dev/null; then
     return
   fi
   if [[ $c == $'\033' ]]; then
@@ -668,18 +782,19 @@ wait_tick() {
 dump_once() {
   local i
   collect_all
-  printf 'cpu=%.1f%% (%s çekirdek, tümü)  ram=%.1f%%  pil=%s%% %s  self=%s%% %s  sort=%s\n' \
-    $TOTAL_CPU_PCT $NCPU $MEM_PCT $BAT_PCT $BAT_LABEL \
-    $SELF_CPU "$(fmt_ram_kb $SELF_RSS_KB)" $SORT_BY
-  printf '%-22s %7s %10s\n' UYGULAMA 'CPU/çek' RAM
+  printf 'cpu=%.1f%% (%s %s)  ram=%.1f%%  %s=%s%% %s  self=%s%% %s  sort=%s  lang=%s  interval=%ss\n' \
+    $TOTAL_CPU_PCT $NCPU "$(L cores)" $MEM_PCT "$(L battery)" $BAT_PCT "$(batt_label)" \
+    $SELF_CPU "$(fmt_ram_kb $SELF_RSS_KB)" $SORT_BY $LANG_UI $REFRESH_SEC
+  printf '%-22s %7s %10s\n' "$(L app)" "$(L cpu_col)" RAM
   for (( i = 1; i <= ${#APP_NAMES}; i++ )); do
     printf '%-22s %6.1f%% %10s\n' \
-      "${APP_NAMES[i]}" "${APP_CPU[i]}" "$(fmt_ram_kb ${APP_RSS[i]})"
+      "$(display_app "${APP_NAMES[i]}")" "${APP_CPU[i]}" "$(fmt_ram_kb ${APP_RSS[i]})"
   done
 }
 
 main() {
   [[ -n ${GIDEON_SORT:-} ]] && SORT_BY=$GIDEON_SORT
+  [[ -n ${GIDEON_LANG:-} ]] && LANG_UI=$GIDEON_LANG
   if [[ -n ${GIDEON_DUMP:-} ]]; then
     dump_once
     return 0
