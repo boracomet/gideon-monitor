@@ -34,7 +34,7 @@ gideon
 | --- | --- |
 | Quit | **Ctrl+C** |
 | Sort | Click the top **cpu** / **ram** panel, the table headers, or **sort: cpu** in the footer (`▼` on the active column) |
-| Refresh interval | Click **1s** in the footer: `1s` → `5s` → `30s` → `1 min` → `1s` |
+| Refresh interval | Click **Reload time: 1s** in the footer: `1s` → `5s` → `30s` → `1 min` → `1s` |
 | Language | Click **Language: EN** in the footer to switch to Turkish (`Dil: TR`); click again to return to English |
 | Battery colors | green ≥ 60% · yellow 25–59% · red < 25% (full is green) |
 | Charging | Label **charging on** while the adapter is charging |

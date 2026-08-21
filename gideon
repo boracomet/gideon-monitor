@@ -125,6 +125,7 @@ L() {
       pwr)     print PWR ;;
       sort)    print sort ;;
       lang)    print Language ;;
+      reload)  print 'Reload time' ;;
       exit)    print exit ;;
       legend)  print 'top: all cores  ·  list: per core' ;;
       system)  print System ;;
@@ -140,6 +141,7 @@ L() {
       pwr)     print GÜÇ ;;
       sort)    print sıralama ;;
       lang)    print Dil ;;
+      reload)  print Yenileme ;;
       exit)    print çık ;;
       legend)  print 'üst: tüm çekirdekler  ·  liste: çekirdek başı' ;;
       system)  print Sistem ;;
@@ -530,50 +532,113 @@ build_stat_panel() {
   PANEL+=("$(box_bottom $width)")
 }
 
+footer_join() {
+  local s=$1 out="" p
+  shift
+  for p in "$@"; do
+    [[ -z $p ]] && continue
+    if [[ -z $out ]]; then
+      out=$p
+    else
+      out="${out}${s}${p}"
+    fi
+  done
+  print -r -- "$out"
+}
+
+# Map a footer substring to SGR 1-based columns (title starts at col 4).
+footer_hit() {
+  local needle=$1
+  local prefix
+  prefix=${FOOTER_TEXT%%${needle}*}
+  if [[ $prefix == "$FOOTER_TEXT" || -z $needle ]]; then
+    print '0 0'
+    return
+  fi
+  local x0=$(( 4 + ${#prefix} ))
+  print -r -- "$x0 $(( x0 + ${#needle} - 1 ))"
+}
+
 build_footer() {
-  local self_ram sort_lbl extra head sort_text sep prefix lbl mid lang_text suffix
+  local self_ram sort_lbl ival self sort_text reload_text lang_text exit_text legend
+  local max keep_exit keep_extra span
   self_ram=$(fmt_ram_kb $SELF_RSS_KB)
   if [[ $SORT_BY == ram ]]; then
     sort_lbl="ram"
   else
     sort_lbl="cpu"
   fi
-  extra=""
-  if (( TCOLS >= 120 )); then
-    extra="  ·  $(L legend)"
-  fi
   case $REFRESH_SEC in
-    5) lbl="5s" ;;
-    30) lbl="30s" ;;
+    5) ival="5s" ;;
+    30) ival="30s" ;;
     60)
       if ui_en; then
-        lbl="1 min"
+        ival="1 min"
       else
-        lbl="1 dk"
+        ival="1 dk"
       fi
       ;;
-    *) lbl="1s" ;;
+    *) ival="1s" ;;
   esac
   if ui_en; then
     lang_text="Language: EN"
   else
     lang_text="Dil: TR"
   fi
-  head="gideon  ${SELF_CPU}%  ${self_ram}  ·  "
+  self="gideon  ${SELF_CPU}%  ${self_ram}"
   sort_text="$(L sort): ${sort_lbl}"
-  sep="  ·  "
-  prefix="${head}${sort_text}${sep}"
-  mid="  ·  "
-  suffix="  ·  ctrl+c $(L exit)${extra}"
-  FOOTER_TEXT="${prefix}${lbl}${mid}${lang_text}${suffix}"
-  # ╰─[space]title…  → title starts at screen col 4 (SGR 1-based)
+  reload_text="$(L reload): ${ival}"
+  exit_text="ctrl+c $(L exit)"
+  legend=""
+  keep_exit=1
+  keep_extra=0
+  if (( TCOLS >= 132 )); then
+    keep_extra=1
+    legend="$(L legend)"
+  fi
+  max=$(( TCOLS - 5 ))
+  (( max < 24 )) && max=24
+
+  assemble_footer() {
+    local sep=$1
+    local -a parts
+    parts=("$self" "$sort_text" "$reload_text" "$lang_text")
+    (( keep_exit )) && parts+=("$exit_text")
+    (( keep_extra )) && parts+=("$legend")
+    FOOTER_TEXT=$(footer_join "$sep" "${parts[@]}")
+  }
+
+  assemble_footer "  ·  "
+  if (( ${#FOOTER_TEXT} > max )); then
+    keep_extra=0
+    assemble_footer "  ·  "
+  fi
+  if (( ${#FOOTER_TEXT} > max )); then
+    assemble_footer " | "
+  fi
+  if (( ${#FOOTER_TEXT} > max )); then
+    keep_exit=0
+    assemble_footer " | "
+  fi
+  if (( ${#FOOTER_TEXT} > max )); then
+    self="gideon ${SELF_CPU}% ${self_ram}"
+    assemble_footer " | "
+  fi
+  if (( ${#FOOTER_TEXT} > max )); then
+    self="gideon"
+    assemble_footer " | "
+  fi
+
   HIT_INT_Y=$TLINES
-  HIT_SORT_X0=$(( 4 + ${#head} ))
-  HIT_SORT_X1=$(( HIT_SORT_X0 + ${#sort_text} - 1 ))
-  HIT_INT_X0=$(( 4 + ${#prefix} ))
-  HIT_INT_X1=$(( HIT_INT_X0 + ${#lbl} - 1 ))
-  HIT_LANG_X0=$(( HIT_INT_X1 + ${#mid} + 1 ))
-  HIT_LANG_X1=$(( HIT_LANG_X0 + ${#lang_text} - 1 ))
+  span=$(footer_hit "$sort_text")
+  HIT_SORT_X0=${span%% *}
+  HIT_SORT_X1=${span##* }
+  span=$(footer_hit "$reload_text")
+  HIT_INT_X0=${span%% *}
+  HIT_INT_X1=${span##* }
+  span=$(footer_hit "$lang_text")
+  HIT_LANG_X0=${span%% *}
+  HIT_LANG_X1=${span##* }
 }
 
 draw_frame() {
