@@ -1,0 +1,706 @@
+#!/bin/zsh
+# gideon — bpytop-like macOS process monitor (no sudo, no extra packages)
+emulate zsh
+setopt extendedglob
+unsetopt nomatch
+export LANG=en_US.UTF-8
+export LC_NUMERIC=C
+
+typeset -a CPU_HIST
+typeset RESTORED=0
+typeset TCOLS TLINES
+typeset -a APP_NAMES APP_CPU APP_RSS APP_EN
+typeset TOTAL_CPU_PCT=0
+typeset MEM_USED_B=0 MEM_TOTAL_B=0 MEM_PCT=0
+typeset BAT_PCT=0 BAT_LABEL="—"
+typeset NCPU=1
+typeset SORT_BY=cpu
+typeset SELF_CPU=0 SELF_RSS_KB=0
+typeset HIT_W1=0 HIT_W2=0 HIT_HDR_ROW=6
+typeset HIT_CPU_X0=0 HIT_CPU_X1=0 HIT_RAM_X0=0 HIT_RAM_X1=0
+typeset STTY_SAVE=""
+
+C_RESET=$'\033[0m'
+C_CYAN=$'\033[1;36m'
+C_GREEN=$'\033[1;32m'
+C_YELLOW=$'\033[1;33m'
+C_RED=$'\033[1;31m'
+C_DIM=$'\033[2m'
+C_BOLD=$'\033[1m'
+
+SPARK_CHARS=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █)
+
+AWK_CLASSIFY='
+function bundle_name(path,   idx, prefix, i, name) {
+  idx = index(path, ".app/")
+  if (idx == 0) {
+    if (path ~ /\.app$/) idx = length(path) - 3
+    else return ""
+  }
+  prefix = substr(path, 1, idx - 1)
+  name = prefix
+  for (i = length(prefix); i >= 1; i--) {
+    if (substr(prefix, i, 1) == "/") {
+      name = substr(prefix, i + 1)
+      break
+    }
+  }
+  return name
+}
+function helper_parent(comm,   n) {
+  n = comm
+  sub(/:.*$/, "", n)
+  sub(/ \([^)]+\)$/, "", n)
+  if (n ~ / Helper$/) {
+    sub(/ Helper$/, "", n)
+    return n
+  }
+  return ""
+}
+function classify(comm,   b, h) {
+  if (comm ~ /\/Finder\.app\// || comm ~ /\/MacOS\/Finder$/ || comm == "Finder")
+    return "Finder"
+  if (index(comm, home "/Applications/") == 1 || comm ~ /^\/Applications\//) {
+    b = bundle_name(comm)
+    if (b != "") return b
+  }
+  if (comm ~ /\/System\/Applications\//) {
+    if (comm ~ /\.appex(\/|$)/) return "System"
+    b = bundle_name(comm)
+    if (b != "") return b
+  }
+  if (comm !~ /^\// && comm !~ /^-/) {
+    h = helper_parent(comm)
+    if (h != "") return h
+  }
+  return "System"
+}
+{
+  if ($1 == "PID") next
+  if (NF < 4) next
+  cpu = $2 + 0
+  rss = $3 + 0
+  if (!match($0, /^[ \t]*[0-9]+[ \t]+[0-9.]+[ \t]+[0-9]+[ \t]+/)) next
+  comm = substr($0, RSTART + RLENGTH)
+  name = classify(comm)
+  cpu_sum[name] += cpu
+  rss_sum[name] += rss
+  total_cpu += cpu
+}
+END {
+  for (k in cpu_sum)
+    printf "%s\t%.2f\t%.0f\n", k, cpu_sum[k], rss_sum[k]
+  printf "__TOTAL__\t%.2f\t0\n", total_cpu
+}
+'
+
+restore() {
+  (( RESTORED )) && return
+  RESTORED=1
+  printf '\033[?1000l\033[?1006l\033[?25h\033[?7h'
+  tput cnorm 2>/dev/null
+  tput rmcup 2>/dev/null
+  [[ -n $STTY_SAVE ]] && stty "$STTY_SAVE" 2>/dev/null
+}
+
+trap 'restore; exit 0' INT TERM
+
+# Always a non-negative decimal, never empty. Stops `(( x > 0 ))` from throwing.
+safe_num() {
+  local x=${1//[[:space:]]/}
+  if [[ $x == [0-9]## || $x == [0-9]##.[0-9]## || $x == [0-9]##. || $x == .[0-9]## ]]; then
+    printf '%s' "$x"
+  else
+    printf '0'
+  fi
+}
+
+pct_color() {
+  local p
+  p=$(safe_num "$1")
+  if (( p >= 80 )); then
+    printf '%s' "$C_RED"
+  elif (( p >= 50 )); then
+    printf '%s' "$C_YELLOW"
+  else
+    printf '%s' "$C_GREEN"
+  fi
+}
+
+# Battery: full is healthy (green); low is warning (red).
+batt_color() {
+  local p
+  p=$(safe_num "$1")
+  if (( p >= 60 )); then
+    printf '%s' "$C_GREEN"
+  elif (( p >= 25 )); then
+    printf '%s' "$C_YELLOW"
+  else
+    printf '%s' "$C_RED"
+  fi
+}
+
+vis_len() {
+  local s=$1
+  s=${s//$'\033'\[[0-9;]#[mK]}
+  printf '%s' ${#s}
+}
+
+repeat_char() {
+  local n ch i
+  n=$(safe_num "$1")
+  ch=$2
+  (( n < 1 )) && return
+  for (( i = 0; i < n; i++ )); do
+    printf '%s' "$ch"
+  done
+}
+
+pad_right() {
+  local s=$1 w=$2
+  w=$(safe_num "$w")
+  (( w < 0 )) && w=0
+  if (( ${#s} > w )); then
+    if (( w <= 1 )); then
+      printf '%s' "${s:0:w}"
+    else
+      printf '%s' "${s:0:$((w-1))}…"
+    fi
+  else
+    printf '%s' "${s}${(l:$((w-${#s})):: :)}"
+  fi
+}
+
+pad_left() {
+  local s=$1 w=$2
+  w=$(safe_num "$w")
+  (( w < 0 )) && w=0
+  if (( ${#s} > w )); then
+    printf '%s' "${s:0:w}"
+  else
+    printf '%s' "${(l:$((w-${#s})):: :)}${s}"
+  fi
+}
+
+pad_inner() {
+  local s=$1 w=$2
+  local v
+  w=$(safe_num "$w")
+  v=$(vis_len "$s")
+  v=$(safe_num "$v")
+  if (( v >= w )); then
+    printf '%s' "$s"
+  else
+    printf '%s' "${s}${(l:$((w-v)):: :)}"
+  fi
+}
+
+make_bar() {
+  local pct width filled empty_n r
+  pct=$(safe_num "$1")
+  width=$(safe_num "$2")
+  (( width < 1 )) && return
+  r=0
+  { r=$(( pct * width / 100.0 + 0.5 )); } 2>/dev/null
+  filled=$(safe_num "${r%.*}")
+  (( filled > width )) && filled=$width
+  (( filled < 0 )) && filled=0
+  empty_n=$(( width - filled ))
+  if [[ $3 == batt ]]; then
+    printf '%s' "$(batt_color "$pct")"
+  else
+    printf '%s' "$(pct_color "$pct")"
+  fi
+  repeat_char $filled '█'
+  printf '%s' "$C_DIM"
+  repeat_char $empty_n '░'
+  printf '%s' "$C_RESET"
+}
+
+make_spark() {
+  local width n i v idx start count r out
+  width=$(safe_num "$1")
+  n=${#CPU_HIST}
+  out=""
+  (( width < 1 )) && return
+  if (( n < 1 )); then
+    repeat_char $width ' '
+    return
+  fi
+  start=1
+  (( n > width )) && start=$(( n - width + 1 ))
+  (( start < 1 )) && start=1
+  count=$(( n - start + 1 ))
+  (( count < 0 )) && count=0
+  if (( count < width )); then
+    out+=$(repeat_char $((width - count)) ' ')
+  fi
+  for (( i = start; i <= n; i++ )); do
+    v=$(safe_num "${CPU_HIST[i]}")
+    idx=0
+    r=0
+    if (( v > 0 )); then
+      { r=$(( v * 8.0 / 100.0 )); } 2>/dev/null
+      idx=$(safe_num "${r%.*}")
+    fi
+    (( idx > 7 )) && idx=7
+    (( idx < 0 )) && idx=0
+    out+=${SPARK_CHARS[idx+1]}
+  done
+  printf '%s' "$out"
+}
+
+box_top() {
+  local title=$1 width=$2
+  local inner left rest
+  width=$(safe_num "$width")
+  inner=$(( width - 2 ))
+  (( inner < 0 )) && inner=0
+  left="─ ${title} "
+  rest=$(( inner - ${#left} ))
+  if (( rest < 0 )); then
+    left=${left:0:inner}
+    rest=0
+  fi
+  printf '%s╭%s%s╮%s' "$C_CYAN" "$left" "$(repeat_char $rest '─')" "$C_RESET"
+}
+
+box_bottom() {
+  local width=$1
+  local inner
+  width=$(safe_num "$width")
+  inner=$(( width - 2 ))
+  (( inner < 0 )) && inner=0
+  printf '%s╰%s╯%s' "$C_CYAN" "$(repeat_char $inner '─')" "$C_RESET"
+}
+
+box_bottom_title() {
+  local title=$1 width=$2
+  local inner left rest
+  width=$(safe_num "$width")
+  inner=$(( width - 2 ))
+  (( inner < 0 )) && inner=0
+  left="─ ${title} "
+  rest=$(( inner - ${#left} ))
+  if (( rest < 0 )); then
+    left=${left:0:inner}
+    rest=0
+  fi
+  printf '%s╰%s%s╯%s' "$C_CYAN" "$left" "$(repeat_char $rest '─')" "$C_RESET"
+}
+
+box_row() {
+  local text=$1 width=$2
+  local inner
+  width=$(safe_num "$width")
+  inner=$(( width - 2 ))
+  (( inner < 0 )) && inner=0
+  printf '%s│%s%s%s│%s' "$C_CYAN" "$C_RESET" "$(pad_inner "$text" $inner)" "$C_CYAN" "$C_RESET"
+}
+
+fmt_ram_kb() {
+  local kb
+  kb=$(safe_num "$1")
+  if (( kb >= 1048576 )); then
+    printf '%.2f GB' $(( kb / 1048576.0 ))
+  elif (( kb >= 1024 )); then
+    printf '%.0f MB' $(( kb / 1024.0 ))
+  else
+    printf '%.0f KB' $kb
+  fi
+}
+
+fmt_bytes_pair() {
+  local used total ug tg
+  used=$(safe_num "$1")
+  total=$(safe_num "$2")
+  ug=$(( used / 1073741824.0 ))
+  tg=$(( total / 1073741824.0 ))
+  if (( total >= 1073741824 )); then
+    printf '%.1f / %.0f GB' $ug $tg
+  else
+    printf '%.0f / %.0f MB' $(( used / 1048576.0 )) $(( total / 1048576.0 ))
+  fi
+}
+
+term_size() {
+  TCOLS=$(tput cols 2>/dev/null) || TCOLS=80
+  TLINES=$(tput lines 2>/dev/null) || TLINES=24
+  [[ -n ${GIDEON_COLS:-} ]] && TCOLS=$GIDEON_COLS
+  [[ -n ${GIDEON_LINES:-} ]] && TLINES=$GIDEON_LINES
+  TCOLS=$(safe_num "$TCOLS")
+  TLINES=$(safe_num "$TLINES")
+  (( TCOLS < 1 )) && TCOLS=80
+  (( TLINES < 1 )) && TLINES=24
+}
+
+collect_mem() {
+  local pagesz used
+  MEM_TOTAL_B=$(sysctl -n hw.memsize 2>/dev/null) || MEM_TOTAL_B=0
+  MEM_TOTAL_B=$(safe_num "$MEM_TOTAL_B")
+  pagesz=$(pagesize 2>/dev/null) || pagesz=4096
+  pagesz=$(safe_num "$pagesz")
+  used=$(vm_stat 2>/dev/null | awk -v ps="$pagesz" '
+    /Pages active:/ { gsub(/\./, "", $NF); active = $NF + 0 }
+    /Pages wired down:/ { gsub(/\./, "", $NF); wired = $NF + 0 }
+    /Pages occupied by compressor:/ { gsub(/\./, "", $NF); comp = $NF + 0 }
+    END { printf "%.0f", (active + wired + comp) * ps }
+  ')
+  MEM_USED_B=$(safe_num "${used:-0}")
+  if (( MEM_TOTAL_B > 0 )); then
+    (( MEM_USED_B > MEM_TOTAL_B )) && MEM_USED_B=$MEM_TOTAL_B
+    MEM_PCT=$(( MEM_USED_B * 100.0 / MEM_TOTAL_B ))
+  else
+    MEM_PCT=0
+  fi
+}
+
+collect_batt() {
+  local raw
+  BAT_PCT=0
+  BAT_LABEL="yok"
+  raw=$(pmset -g batt 2>/dev/null) || return
+  if [[ $raw != *InternalBattery* && $raw != *Battery* ]]; then
+    if [[ $raw == *"AC Power"* ]]; then
+      BAT_PCT=100
+      BAT_LABEL="priz"
+    fi
+    return
+  fi
+  if [[ $raw =~ ([0-9]+)% ]]; then
+    BAT_PCT=$(safe_num "$match[1]")
+  fi
+  if [[ $raw == *"discharging"* ]]; then
+    if [[ $raw =~ ([0-9]+:[0-9]+)[[:space:]]remaining ]]; then
+      BAT_LABEL="${match[1]} kaldı"
+    else
+      BAT_LABEL="pilde"
+    fi
+  elif [[ $raw == *"charging"* ]]; then
+    BAT_LABEL="şarj etkin"
+  elif [[ $raw == *"charged"* ]]; then
+    BAT_LABEL="dolu"
+  elif [[ $raw == *"AC Power"* ]]; then
+    BAT_LABEL="şarj etkin"
+  else
+    BAT_LABEL="pilde"
+  fi
+}
+
+collect_self() {
+  local out cpu rss
+  out=$(ps -axo pid=,ppid=,pcpu=,rss= 2>/dev/null | awk -v self="$$" '
+    $1+0 == self+0 { cpu += $3; rss += $4; next }
+    $2+0 == self+0 { cpu += $3; rss += $4 }
+    END { printf "%.1f %d", cpu+0, rss+0 }
+  ')
+  cpu=${out%% *}
+  rss=${out#* }
+  SELF_CPU=$(safe_num "$cpu")
+  SELF_RSS_KB=$(safe_num "$rss")
+}
+
+collect_apps() {
+  local name cpu rss total_raw=0 ram_gb sort_key
+  APP_NAMES=()
+  APP_CPU=()
+  APP_RSS=()
+  APP_EN=()
+  NCPU=$(sysctl -n hw.logicalcpu 2>/dev/null) || NCPU=1
+  NCPU=$(safe_num "$NCPU")
+  (( NCPU < 1 )) && NCPU=1
+
+  if [[ $SORT_BY == ram ]]; then
+    sort_key=( -t $'\t' -k3,3nr )
+  else
+    sort_key=( -t $'\t' -k2,2nr )
+  fi
+
+  while IFS=$'\t' read -r name cpu rss; do
+    [[ -z $name ]] && continue
+    if [[ $name == __TOTAL__ ]]; then
+      total_raw=$(safe_num "$cpu")
+      continue
+    fi
+    cpu=$(safe_num "$cpu")
+    rss=$(safe_num "$rss")
+    APP_NAMES+=("$name")
+    APP_CPU+=("$cpu")
+    APP_RSS+=("$rss")
+    ram_gb=$(( rss / 1048576.0 ))
+    APP_EN+=("$(( cpu * 4.0 + ram_gb ))")
+  done < <(ps -axo pid,pcpu,rss,comm 2>/dev/null | awk -v home="$HOME" "$AWK_CLASSIFY" | sort "${sort_key[@]}")
+
+  TOTAL_CPU_PCT=$(( total_raw / NCPU ))
+  (( TOTAL_CPU_PCT > 100 )) && TOTAL_CPU_PCT=100
+  (( TOTAL_CPU_PCT < 0 )) && TOTAL_CPU_PCT=0
+}
+
+collect_all() {
+  collect_mem
+  collect_batt
+  collect_apps
+  collect_self
+  CPU_HIST+=("$(safe_num $TOTAL_CPU_PCT)")
+  (( ${#CPU_HIST} > 40 )) && CPU_HIST=("${CPU_HIST[-40,-1]}")
+}
+
+build_stat_panel() {
+  local title=$1 width=$2 line1=$3 bar_pct=$4 bar_mode=$5
+  local inner bar_w
+  width=$(safe_num "$width")
+  inner=$(( width - 2 ))
+  (( inner < 0 )) && inner=0
+  bar_w=$(( inner - 2 ))
+  (( bar_w < 1 )) && bar_w=1
+  PANEL=()
+  PANEL+=("$(box_top "$title" $width)")
+  PANEL+=("$(box_row "$(pad_inner "$line1" $inner)" $width)")
+  PANEL+=("$(box_row " $(make_bar $bar_pct $bar_w $bar_mode)" $width)")
+  PANEL+=("$(box_bottom $width)")
+}
+
+footer_title() {
+  local self_ram sort_lbl extra
+  self_ram=$(fmt_ram_kb $SELF_RSS_KB)
+  if [[ $SORT_BY == ram ]]; then
+    sort_lbl="ram"
+  else
+    sort_lbl="cpu"
+  fi
+  extra=""
+  if (( TCOLS >= 108 )); then
+    extra="  ·  üst: tüm çekirdekler  ·  liste: çekirdek başı"
+  fi
+  printf 'gideon  %s%%  %s  ·  sıralama: %s  ·  1s  ·  ctrl+c çık%s' \
+    "$SELF_CPU" "$self_ram" "$sort_lbl" "$extra"
+}
+
+draw_frame() {
+  term_size
+  local w1 w2 w3 inner spark_w spark line1 r cpu_title
+  local i n slots aheight
+  local name_w cpu_w ram_w power_w gaps used_w
+  local max_e=0 epct row name cpu rss en nc
+  local hdr_cpu hdr_ram cpu_inner0 ram_inner0
+  local -a top_cpu top_ram top_bat rows
+  local buf=""
+
+  w1=$(( TCOLS / 3 ))
+  w2=$w1
+  w3=$(( TCOLS - w1 - w2 ))
+  (( w1 < 1 )) && w1=1
+  (( w2 < 1 )) && w2=1
+  (( w3 < 1 )) && w3=1
+  HIT_W1=$w1
+  HIT_W2=$w2
+
+  inner=$(( w1 - 2 ))
+  (( inner < 0 )) && inner=0
+  r=$(( $(safe_num $TOTAL_CPU_PCT) + 0.5 ))
+  line1=" $(pct_color $TOTAL_CPU_PCT)$(printf '%d%%' $(safe_num ${r%.*}))${C_RESET}  "
+  spark_w=$(( inner - $(vis_len "$line1") - 1 ))
+  (( spark_w > 40 )) && spark_w=40
+  (( spark_w < 0 )) && spark_w=0
+  spark=$(make_spark $spark_w)
+  line1="${line1}$(pct_color $TOTAL_CPU_PCT)${spark}${C_RESET}"
+  cpu_title="cpu · ${NCPU} çekirdek"
+  if (( ${#cpu_title} + 4 > w1 )); then
+    cpu_title="cpu · ${NCPU}"
+  fi
+  build_stat_panel "$cpu_title" $w1 "$line1" $TOTAL_CPU_PCT
+  top_cpu=("${PANEL[@]}")
+
+  line1=" $(fmt_bytes_pair $MEM_USED_B $MEM_TOTAL_B)"
+  build_stat_panel "ram" $w2 "$line1" $MEM_PCT
+  top_ram=("${PANEL[@]}")
+
+  line1=" $(batt_color $BAT_PCT)$(printf '%d%%' $(safe_num $BAT_PCT))${C_RESET}  ${BAT_LABEL}"
+  build_stat_panel "pil" $w3 "$line1" $BAT_PCT batt
+  top_bat=("${PANEL[@]}")
+
+  rows=()
+  for i in 1 2 3 4; do
+    rows+=("${top_cpu[i]}${top_ram[i]}${top_bat[i]}")
+  done
+
+  aheight=$(( TLINES - 4 ))
+  (( aheight < 3 )) && aheight=3
+
+  cpu_w=8
+  ram_w=10
+  power_w=10
+  gaps=6
+  used_w=$(( cpu_w + ram_w + power_w + gaps + 2 ))
+  name_w=$(( TCOLS - 2 - used_w ))
+  while (( name_w < 6 && power_w > 4 )); do
+    (( power_w-- ))
+    (( name_w++ ))
+  done
+  while (( name_w < 6 && ram_w > 6 )); do
+    (( ram_w-- ))
+    (( name_w++ ))
+  done
+  (( name_w < 1 )) && name_w=1
+  (( power_w < 1 )) && power_w=1
+
+  # 1-based screen cols for header hit-test (inner starts at col 2)
+  cpu_inner0=$(( 1 + name_w + 2 ))
+  ram_inner0=$(( cpu_inner0 + cpu_w + 2 ))
+  HIT_CPU_X0=$(( 2 + cpu_inner0 ))
+  HIT_CPU_X1=$(( HIT_CPU_X0 + cpu_w - 1 ))
+  HIT_RAM_X0=$(( 2 + ram_inner0 ))
+  HIT_RAM_X1=$(( HIT_RAM_X0 + ram_w - 1 ))
+  HIT_HDR_ROW=6
+
+  hdr_cpu="CPU/çek"
+  hdr_ram="RAM"
+  if [[ $SORT_BY == ram ]]; then
+    hdr_ram="RAM▼"
+  else
+    hdr_cpu="CPU/çek▼"
+  fi
+
+  rows+=("$(box_top "uygulamalar" $TCOLS)")
+  rows+=("$(box_row " ${C_DIM}$(pad_right UYGULAMA $name_w)  $(pad_left $hdr_cpu $cpu_w)  $(pad_left $hdr_ram $ram_w)  $(pad_right GÜÇ $power_w)${C_RESET}" $TCOLS)")
+
+  slots=$(( aheight - 3 ))
+  (( slots < 0 )) && slots=0
+
+  n=${#APP_NAMES}
+  for (( i = 1; i <= n; i++ )); do
+    (( $(safe_num ${APP_EN[i]}) > max_e )) && max_e=${APP_EN[i]}
+  done
+  max_e=$(safe_num "$max_e")
+
+  for (( i = 1; i <= slots; i++ )); do
+    if (( i <= n )); then
+      name=${APP_NAMES[i]}
+      cpu=$(safe_num ${APP_CPU[i]})
+      rss=$(safe_num ${APP_RSS[i]})
+      en=$(safe_num ${APP_EN[i]})
+      epct=0
+      (( max_e > 0 )) && epct=$(( en * 100.0 / max_e ))
+      nc=$(pct_color $cpu)
+      row=" $(pad_right "$name" $name_w)  ${nc}$(pad_left "$(printf '%.1f%%' $cpu)" $cpu_w)${C_RESET}  $(pad_left "$(fmt_ram_kb $rss)" $ram_w)  $(make_bar $epct $power_w)"
+      rows+=("$(box_row "$row" $TCOLS)")
+    else
+      rows+=("$(box_row " " $TCOLS)")
+    fi
+  done
+
+  rows+=("$(box_bottom_title "$(footer_title)" $TCOLS)")
+
+  buf=$'\033[H'
+  for (( i = 1; i <= TLINES; i++ )); do
+    buf+=$'\033['$i';1H'
+    buf+="${rows[i]}"
+    buf+=$'\033[K'
+  done
+  printf '%s' "$buf"
+}
+
+apply_click() {
+  local x y
+  x=$(safe_num "$1")
+  y=$(safe_num "$2")
+  (( x < 1 || y < 1 )) && return 1
+  if (( y >= 1 && y <= 4 )); then
+    if (( x <= HIT_W1 )); then
+      SORT_BY=cpu
+      return 0
+    fi
+    if (( x <= HIT_W1 + HIT_W2 )); then
+      SORT_BY=ram
+      return 0
+    fi
+    return 1
+  fi
+  if (( y == HIT_HDR_ROW )); then
+    if (( x >= HIT_CPU_X0 && x <= HIT_CPU_X1 )); then
+      SORT_BY=cpu
+      return 0
+    fi
+    if (( x >= HIT_RAM_X0 && x <= HIT_RAM_X1 )); then
+      SORT_BY=ram
+      return 0
+    fi
+  fi
+  return 1
+}
+
+handle_esc_seq() {
+  local c rest btn x y
+  read -t 0.05 -k 1 c 2>/dev/null || return 1
+  [[ $c == '[' ]] || return 1
+  read -t 0.05 -k 1 c 2>/dev/null || return 1
+  [[ $c == '<' ]] || return 1
+  rest=""
+  while read -t 0.05 -k 1 c 2>/dev/null; do
+    if [[ $c == 'M' || $c == 'm' ]]; then
+      break
+    fi
+    rest+=$c
+  done
+  [[ $c == 'M' ]] || return 1
+  btn=${rest%%;*}
+  rest=${rest#*;}
+  x=${rest%%;*}
+  y=${rest#*;}
+  [[ $btn == 0 ]] || return 1
+  apply_click "$x" "$y"
+}
+
+wait_tick() {
+  local c
+  if [[ ! -t 0 ]]; then
+    sleep 1
+    return
+  fi
+  if ! read -r -t 1 -k 1 c 2>/dev/null; then
+    return
+  fi
+  if [[ $c == $'\033' ]]; then
+    handle_esc_seq || true
+  fi
+}
+
+dump_once() {
+  local i
+  collect_all
+  printf 'cpu=%.1f%% (%s çekirdek, tümü)  ram=%.1f%%  pil=%s%% %s  self=%s%% %s  sort=%s\n' \
+    $TOTAL_CPU_PCT $NCPU $MEM_PCT $BAT_PCT $BAT_LABEL \
+    $SELF_CPU "$(fmt_ram_kb $SELF_RSS_KB)" $SORT_BY
+  printf '%-22s %7s %10s\n' UYGULAMA 'CPU/çek' RAM
+  for (( i = 1; i <= ${#APP_NAMES}; i++ )); do
+    printf '%-22s %6.1f%% %10s\n' \
+      "${APP_NAMES[i]}" "${APP_CPU[i]}" "$(fmt_ram_kb ${APP_RSS[i]})"
+  done
+}
+
+main() {
+  [[ -n ${GIDEON_SORT:-} ]] && SORT_BY=$GIDEON_SORT
+  if [[ -n ${GIDEON_DUMP:-} ]]; then
+    dump_once
+    return 0
+  fi
+
+  tput smcup 2>/dev/null
+  tput civis 2>/dev/null
+  printf '\033[?25l\033[?7l\033[2J'
+  if [[ -t 0 ]]; then
+    STTY_SAVE=$(stty -g 2>/dev/null) || STTY_SAVE=""
+    stty -echo -icanon 2>/dev/null || true
+    printf '\033[?1000h\033[?1006h'
+  fi
+
+  while true; do
+    collect_all
+    draw_frame
+    [[ -n ${GIDEON_ONCE:-} ]] && break
+    wait_tick
+  done
+  restore
+}
+
+main "$@"
