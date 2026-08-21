@@ -16,12 +16,13 @@ typeset BAT_PCT=0 BAT_STATE=none BAT_REMAIN=""
 typeset NCPU=1
 typeset SORT_BY=cpu
 typeset REFRESH_SEC=1
-typeset LANG_UI=tr
+typeset LANG_UI=en
 typeset SELF_CPU=0 SELF_RSS_KB=0
 typeset HIT_W1=0 HIT_W2=0 HIT_HDR_ROW=6
 typeset HIT_CPU_X0=0 HIT_CPU_X1=0 HIT_RAM_X0=0 HIT_RAM_X1=0
 typeset HIT_INT_X0=0 HIT_INT_X1=0 HIT_INT_Y=0
-typeset HIT_TR_X0=0 HIT_TR_X1=0 HIT_EN_X0=0 HIT_EN_X1=0
+typeset HIT_LANG_X0=0 HIT_LANG_X1=0
+typeset HIT_SORT_X0=0 HIT_SORT_X1=0
 typeset FOOTER_TEXT=""
 typeset STTY_SAVE=""
 
@@ -123,6 +124,7 @@ L() {
       cpu_col) print 'CPU/core' ;;
       pwr)     print PWR ;;
       sort)    print sort ;;
+      lang)    print Language ;;
       exit)    print exit ;;
       legend)  print 'top: all cores  ·  list: per core' ;;
       system)  print System ;;
@@ -137,6 +139,7 @@ L() {
       cpu_col) print 'CPU/çek' ;;
       pwr)     print GÜÇ ;;
       sort)    print sıralama ;;
+      lang)    print Dil ;;
       exit)    print çık ;;
       legend)  print 'üst: tüm çekirdekler  ·  liste: çekirdek başı' ;;
       system)  print Sistem ;;
@@ -528,7 +531,7 @@ build_stat_panel() {
 }
 
 build_footer() {
-  local self_ram sort_lbl extra prefix lbl mid lang suffix
+  local self_ram sort_lbl extra head sort_text sep prefix lbl mid lang_text suffix
   self_ram=$(fmt_ram_kb $SELF_RSS_KB)
   if [[ $SORT_BY == ram ]]; then
     sort_lbl="ram"
@@ -551,19 +554,26 @@ build_footer() {
       ;;
     *) lbl="1s" ;;
   esac
-  prefix="gideon  ${SELF_CPU}%  ${self_ram}  ·  $(L sort): ${sort_lbl}  ·  "
+  if ui_en; then
+    lang_text="Language: EN"
+  else
+    lang_text="Dil: TR"
+  fi
+  head="gideon  ${SELF_CPU}%  ${self_ram}  ·  "
+  sort_text="$(L sort): ${sort_lbl}"
+  sep="  ·  "
+  prefix="${head}${sort_text}${sep}"
   mid="  ·  "
-  lang="TR EN"
   suffix="  ·  ctrl+c $(L exit)${extra}"
-  FOOTER_TEXT="${prefix}${lbl}${mid}${lang}${suffix}"
+  FOOTER_TEXT="${prefix}${lbl}${mid}${lang_text}${suffix}"
   # ╰─[space]title…  → title starts at screen col 4 (SGR 1-based)
   HIT_INT_Y=$TLINES
+  HIT_SORT_X0=$(( 4 + ${#head} ))
+  HIT_SORT_X1=$(( HIT_SORT_X0 + ${#sort_text} - 1 ))
   HIT_INT_X0=$(( 4 + ${#prefix} ))
   HIT_INT_X1=$(( HIT_INT_X0 + ${#lbl} - 1 ))
-  HIT_TR_X0=$(( HIT_INT_X1 + ${#mid} + 1 ))
-  HIT_TR_X1=$(( HIT_TR_X0 + 1 ))
-  HIT_EN_X0=$(( HIT_TR_X0 + 3 ))
-  HIT_EN_X1=$(( HIT_EN_X0 + 1 ))
+  HIT_LANG_X0=$(( HIT_INT_X1 + ${#mid} + 1 ))
+  HIT_LANG_X1=$(( HIT_LANG_X0 + ${#lang_text} - 1 ))
 }
 
 draw_frame() {
@@ -700,6 +710,22 @@ cycle_interval() {
   esac
 }
 
+toggle_sort() {
+  if [[ $SORT_BY == ram ]]; then
+    SORT_BY=cpu
+  else
+    SORT_BY=ram
+  fi
+}
+
+toggle_lang() {
+  if ui_en; then
+    LANG_UI=tr
+  else
+    LANG_UI=en
+  fi
+}
+
 apply_click() {
   local x y
   x=$(safe_num "$1")
@@ -726,16 +752,16 @@ apply_click() {
       return 0
     fi
   fi
+  if (( y == HIT_INT_Y && x >= HIT_SORT_X0 && x <= HIT_SORT_X1 )); then
+    toggle_sort
+    return 0
+  fi
   if (( y == HIT_INT_Y && x >= HIT_INT_X0 && x <= HIT_INT_X1 )); then
     cycle_interval
     return 0
   fi
-  if (( y == HIT_INT_Y && x >= HIT_TR_X0 && x <= HIT_TR_X1 )); then
-    LANG_UI=tr
-    return 0
-  fi
-  if (( y == HIT_INT_Y && x >= HIT_EN_X0 && x <= HIT_EN_X1 )); then
-    LANG_UI=en
+  if (( y == HIT_INT_Y && x >= HIT_LANG_X0 && x <= HIT_LANG_X1 )); then
+    toggle_lang
     return 0
   fi
   return 1
